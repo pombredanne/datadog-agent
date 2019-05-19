@@ -36,7 +36,7 @@ func TestSender(t *testing.T) {
 	destinationsCtx.Start()
 
 	destination := tcp.AddrToDestination(l.Addr(), destinationsCtx)
-	destinations := client.NewDestinations(destination, nil)
+	destinations := client.NewDestinationsOld(destination, nil)
 
 	sender := NewSender(input, output, destinations)
 	sender.Start()
@@ -69,7 +69,7 @@ func TestSenderNotBlockedByAdditional(t *testing.T) {
 	mainDestination := tcp.AddrToDestination(l.Addr(), destinationsCtx)
 	// This destination doesn't exists
 	additionalDestination := tcp.NewDestination(config.Endpoint{Host: "dont.exist.local", Port: 0}, destinationsCtx)
-	destinations := client.NewDestinations(mainDestination, []client.Destination{additionalDestination})
+	destinations := client.NewDestinationsOld(mainDestination, []client.Destination{additionalDestination})
 
 	sender := NewSender(input, output, destinations)
 	sender.Start()
