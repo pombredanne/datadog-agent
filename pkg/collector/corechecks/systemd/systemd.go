@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/aggregator"
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/integration"
@@ -22,11 +23,16 @@ import (
 
 const systemdCheckName = "systemd"
 
+const (
+	unitActiveState = "active"
+)
+
 // For testing purpose
 var (
 	dbusNew       = dbus.New
 	connListUnits = func(c *dbus.Conn) ([]dbus.UnitStatus, error) { return c.ListUnits() }
 	connClose     = func(c *dbus.Conn) { c.Close() }
+	timeNow       = time.Now
 )
 
 // SystemdCheck doesn't need additional fields
@@ -93,7 +99,7 @@ func (c *SystemdCheck) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Co
 	log.Infof("Unit Properties len: %v", len(properties))
 	log.Infof("Unit Properties len: %v", properties)
 
-	activeState, err := getPropertyAsString(properties, "ActiveState")
+	activeState, err := getStringProperty(properties, "ActiveState")
 	if err != nil {
 		log.Errorf("Error getting property: %s", err)
 	} else {
@@ -101,20 +107,46 @@ func (c *SystemdCheck) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Co
 	}
 
 	sender.Gauge("systemd.unit.count", 1, "", tags)
+
+	activeEnterTime, err := getNumberProperty(properties, "ActiveEnterTimestamp") // microseconds
+	if err != nil {
+		log.Errorf("Error getting property ActiveEnterTimestamp: %v", err)
+	} else {
+		sender.Gauge("systemd.unit.uptime", float64(getUptime(activeEnterTime, timeNow().UnixNano())), "", tags) // microseconds
+	}
+}
+
+func getUptime(activeEnterTime uint64, nanoNow int64) int64 {
+	log.Infof("activeEnterTime: %v %T", activeEnterTime, activeEnterTime)
+	log.Infof("nanoNow: %v %T", nanoNow, nanoNow)
+	uptime := nanoNow/1000 - int64(activeEnterTime)
+	log.Infof("uptime: %v", uptime)
+	log.Infof("uptime mins: %v", uptime/1000000/60)
+	return uptime
 }
 
 func submitPropertyAsGauge(sender aggregator.Sender, properties map[string]interface{}, propertyName string, metric string, tags []string) {
-	value, ok := properties[propertyName].(uint64)
-	if !ok {
-		log.Errorf("Property %s is not a uint64", propertyName)
+	value, err := getNumberProperty(properties, propertyName)
+	if err != nil {
+		log.Errorf("Error getting property %s: %v", propertyName, err)
+		return
 	}
-
-	log.Infof("[DEV] Get Number Property %s = %d", propertyName, value)
 
 	sender.Gauge(metric, float64(value), "", tags)
 }
 
-func getPropertyAsString(properties map[string]interface{}, propertyName string) (string, error) {
+func getNumberProperty(properties map[string]interface{}, propertyName string) (uint64, error) {
+	log.Infof("[DEV] properties[propertyName]: %s", properties[propertyName])
+	value, ok := properties[propertyName].(uint64)
+	if !ok {
+		return 0, fmt.Errorf("Property %s is not a uint64", propertyName)
+	}
+
+	log.Infof("[DEV] Get Number Property %s = %d", propertyName, value)
+	return value, nil
+}
+
+func getStringProperty(properties map[string]interface{}, propertyName string) (string, error) {
 	value, ok := properties[propertyName].(string)
 	if !ok {
 		return "", fmt.Errorf("Property %s is not a string", propertyName)
@@ -145,7 +177,7 @@ func submitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
 	activeUnitCounter := 0
 	for _, unit := range units {
 		log.Info("[DEV] [unit] %s: ActiveState=%s, SubState=%s", unit.Name, unit.ActiveState, unit.SubState)
-		if unit.ActiveState == "active" {
+		if unit.ActiveState == unitActiveState {
 			activeUnitCounter++
 		}
 	}
