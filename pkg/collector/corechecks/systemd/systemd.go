@@ -6,6 +6,7 @@
 package systemd
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -69,9 +70,10 @@ func (c *SystemdCheck) Run() error {
 	submitOverallMetrics(sender, conn)
 
 	for _, unitName := range c.config.instance.UnitNames {
-		c.submitUnitMetrics(sender, conn, unitName)
+		tags := []string{"unit:" + unitName}
+		c.submitUnitMetrics(sender, conn, unitName, tags)
 		if strings.HasSuffix(unitName, ".service") {
-			c.submitServiceMetrics(sender, conn, unitName)
+			c.submitServiceMetrics(sender, conn, unitName, tags)
 		}
 	}
 
@@ -80,21 +82,28 @@ func (c *SystemdCheck) Run() error {
 	return nil
 }
 
-func (c *SystemdCheck) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string) {
+func (c *SystemdCheck) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
 	log.Infof("[DEV] Check Unit %s", unitName)
 
-	unitProperties, err := conn.GetUnitProperties(unitName)
+	properties, err := conn.GetUnitProperties(unitName)
 	if err != nil {
 		log.Errorf("Error getting unit properties: %s", unitName)
 	}
 
-	log.Infof("Unit Properties len: %v", len(unitProperties))
-	log.Infof("Unit Properties len: %v", unitProperties)
+	log.Infof("Unit Properties len: %v", len(properties))
+	log.Infof("Unit Properties len: %v", properties)
 
-	// submitGauge(sender, unitProperties, "CPUUsageNSec", "systemd.unit.cpu")
+	activeState, err := getPropertyAsString(properties, "ActiveState")
+	if err != nil {
+		log.Errorf("Error getting property: %s", err)
+	} else {
+		tags = append(tags, "active_state:"+activeState)
+	}
+
+	sender.Gauge("systemd.unit.count", 1, "", tags)
 }
 
-func submitGauge(sender aggregator.Sender, properties map[string]interface{}, propertyName string, metric string, tags []string) {
+func submitPropertyAsGauge(sender aggregator.Sender, properties map[string]interface{}, propertyName string, metric string, tags []string) {
 	value, ok := properties[propertyName].(uint64)
 	if !ok {
 		log.Errorf("Property %s is not a uint64", propertyName)
@@ -105,27 +114,25 @@ func submitGauge(sender aggregator.Sender, properties map[string]interface{}, pr
 	sender.Gauge(metric, float64(value), "", tags)
 }
 
-func getPropertyAsString(properties map[string]interface{}, propertyName string) string {
+func getPropertyAsString(properties map[string]interface{}, propertyName string) (string, error) {
 	value, ok := properties[propertyName].(string)
 	if !ok {
-		log.Errorf("Property %s is not a string", propertyName)
+		return "", fmt.Errorf("Property %s is not a string", propertyName)
 	}
 
 	log.Infof("[DEV] Get String Property %s = %s", propertyName, value)
-	return value
+	return value, nil
 }
 
-func (c *SystemdCheck) submitServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string) {
+func (c *SystemdCheck) submitServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
 	properties, err := conn.GetUnitTypeProperties(unitName, "Service") // TODO: change me
 	if err != nil {
 		log.Errorf("Error getting properties for service: %s", unitName)
 	}
 
-	tags := []string{"unit:" + unitName}
-
-	submitGauge(sender, properties, "CPUUsageNSec", "systemd.unit.cpu", tags)
-	submitGauge(sender, properties, "MemoryCurrent", "systemd.unit.memory", tags)
-	submitGauge(sender, properties, "TasksCurrent", "systemd.unit.tasks", tags)
+	submitPropertyAsGauge(sender, properties, "CPUUsageNSec", "systemd.unit.cpu", tags)
+	submitPropertyAsGauge(sender, properties, "MemoryCurrent", "systemd.unit.memory", tags)
+	submitPropertyAsGauge(sender, properties, "TasksCurrent", "systemd.unit.tasks", tags)
 }
 
 func submitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
