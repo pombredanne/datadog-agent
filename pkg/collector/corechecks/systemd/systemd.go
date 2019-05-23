@@ -6,8 +6,8 @@
 package systemd
 
 import (
-	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/DataDog/datadog-agent/pkg/aggregator"
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/integration"
@@ -50,6 +50,10 @@ type systemdConfig struct {
 // Run executes the check
 func (c *SystemdCheck) Run() error {
 
+	log.Warnf("[DEV] c.config.instance.UnitNames Run: %v", c.config.instance.UnitNames)
+	log.Warnf("[DEV] c.config.instance.UnitRegexStrings Run: %v", c.config.instance.UnitRegexStrings)
+	log.Warnf("[DEV] c.config.instance.UnitRegexPatterns Run: %v", c.config.instance.UnitRegexPatterns)
+
 	sender, err := aggregator.GetSender(c.ID())
 	if err != nil {
 		return err
@@ -62,27 +66,84 @@ func (c *SystemdCheck) Run() error {
 	}
 	defer connClose(conn)
 
-	// Overall Unit Metrics
+	submitOverallMetrics(sender, conn)
+
+	for _, unitName := range c.config.instance.UnitNames {
+		c.submitUnitMetrics(sender, conn, unitName)
+		if strings.HasSuffix(unitName, ".service") {
+			c.submitServiceMetrics(sender, conn, unitName)
+		}
+	}
+
+	sender.Commit()
+
+	return nil
+}
+
+func (c *SystemdCheck) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string) {
+	log.Infof("[DEV] Check Unit %s", unitName)
+
+	unitProperties, err := conn.GetUnitProperties(unitName)
+	if err != nil {
+		log.Errorf("Error getting unit properties: %s", unitName)
+	}
+
+	log.Infof("Unit Properties len: %v", len(unitProperties))
+	log.Infof("Unit Properties len: %v", unitProperties)
+
+	// submitGauge(sender, unitProperties, "CPUUsageNSec", "systemd.unit.cpu")
+}
+
+func submitGauge(sender aggregator.Sender, properties map[string]interface{}, propertyName string, metric string, tags []string) {
+	value, ok := properties[propertyName].(uint64)
+	if !ok {
+		log.Errorf("Property %s is not a uint64", propertyName)
+	}
+
+	log.Infof("[DEV] Get Number Property %s = %d", propertyName, value)
+
+	sender.Gauge(metric, float64(value), "", tags)
+}
+
+func getPropertyAsString(properties map[string]interface{}, propertyName string) string {
+	value, ok := properties[propertyName].(string)
+	if !ok {
+		log.Errorf("Property %s is not a string", propertyName)
+	}
+
+	log.Infof("[DEV] Get String Property %s = %s", propertyName, value)
+	return value
+}
+
+func (c *SystemdCheck) submitServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string) {
+	properties, err := conn.GetUnitTypeProperties(unitName, "Service") // TODO: change me
+	if err != nil {
+		log.Errorf("Error getting properties for service: %s", unitName)
+	}
+
+	tags := []string{"unit:" + unitName}
+
+	submitGauge(sender, properties, "CPUUsageNSec", "systemd.unit.cpu", tags)
+	submitGauge(sender, properties, "MemoryCurrent", "systemd.unit.memory", tags)
+	submitGauge(sender, properties, "TasksCurrent", "systemd.unit.tasks", tags)
+}
+
+func submitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
+	log.Info("Check Overall Metrics")
 	units, err := connListUnits(conn)
 	if err != nil {
-		fmt.Println("ListUnits Err: ", err)
-		return err
+		log.Errorf("Error getting list of units")
 	}
 
 	activeUnitCounter := 0
 	for _, unit := range units {
-		log.Debugf("[unit] %s: ActiveState=%s, SubState=%s", unit.Name, unit.ActiveState, unit.SubState)
+		log.Info("[DEV] [unit] %s: ActiveState=%s, SubState=%s", unit.Name, unit.ActiveState, unit.SubState)
 		if unit.ActiveState == "active" {
 			activeUnitCounter++
 		}
 	}
 
 	sender.Gauge("systemd.unit.active.count", float64(activeUnitCounter), "", nil)
-
-	sender.Gauge("systemd.unit.cpu", 1, "", nil)
-	sender.Commit()
-
-	return nil
 }
 
 // Configure configures the network checks
