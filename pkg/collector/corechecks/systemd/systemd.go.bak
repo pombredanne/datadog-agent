@@ -8,6 +8,7 @@ package systemd
 import (
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/aggregator"
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/integration"
@@ -79,6 +80,25 @@ func (c *SystemdCheck) Run() error {
 
 	sender.Gauge("systemd.unit.active.count", float64(activeUnitCounter), "", nil)
 
+	// // Unit Metrics
+	// configUnits := []string{"ssh.service", "docker.service"}
+
+	// for _, unit := range configUnits {
+	// 	tags := []string{fmt.Sprintf("unit_name:%s", unit)}
+
+	// 	parts := strings.Split(unit, ".")
+	// 	unitType := parts[1]
+	// 	unitName := parts[0]
+	// 	log.Info("unit_name:", unitName)
+	// 	cpuProperty, err := conn.GetUnitTypeProperty(unitName, unitType, "CPUUsageNSec")
+	// 	if err != nil {
+	// 		log.Error("Property Err: ", err)
+	// 	} else {
+	// 		log.Info("systemd.unit.cpu", float64(cpuProperty.Value.Value().(uint64)))
+	// 		sender.Gauge("systemd.unit.cpu", float64(cpuProperty.Value.Value().(uint64)), "", tags)
+	// 	}
+	// }
+
 	sender.Gauge("systemd.unit.cpu", 1, "", nil)
 	sender.Commit()
 
@@ -100,8 +120,8 @@ func (c *SystemdCheck) Configure(rawInstance integration.Data, rawInitConfig int
 		return err
 	}
 
-	log.Warnf("[DEV] c.config.instance.UnitNames: %v", c.config.instance.UnitNames)
-	log.Warnf("[DEV] c.config.instance.UnitRegexStrings: %v", c.config.instance.UnitRegexStrings)
+	log.Warn("c.config.instance.UnitNames: %v\n", c.config.instance.UnitNames)
+	log.Warn("c.config.instance.UnitRegexStrings: %v\n", c.config.instance.UnitRegexStrings)
 
 	for _, regexString := range c.config.instance.UnitRegexStrings {
 		pattern, err := regexp.Compile(regexString)
@@ -110,17 +130,66 @@ func (c *SystemdCheck) Configure(rawInstance integration.Data, rawInitConfig int
 		} else {
 			c.config.instance.UnitRegexPatterns = append(c.config.instance.UnitRegexPatterns, pattern)
 		}
+
 	}
-	log.Warnf("[DEV] c.config.instance.UnitRegexPatterns: %v", c.config.instance.UnitRegexPatterns)
+	log.Warn("c.config.instance.UnitRegexPatterns: %v\n", c.config.instance.UnitRegexPatterns)
 	return nil
 }
 
 func systemdFactory() check.Check {
 	return &SystemdCheck{
 		CheckBase: core.NewCheckBase(systemdCheckName),
+		// dbus:      defaultDbusWrapper{},
 	}
 }
 
 func init() {
 	core.RegisterCheck(systemdCheckName, systemdFactory)
+}
+
+// ==============================================
+// May be used for for Service Checks and Events
+// ==============================================
+func sandboxEvent() {
+	target := "graphical.target"
+
+	log.Info("==> Sandbox sandboxEvent")
+
+	conn, err := dbus.New()
+
+	if err != nil {
+		log.Error("New Err: ", err)
+		return
+	}
+
+	err = conn.Subscribe()
+	if err != nil {
+		log.Error("Subscribe Err: ", err)
+		return
+	}
+
+	evChan, errChan := conn.SubscribeUnits(time.Second)
+
+	for {
+		select {
+		case changes := <-evChan:
+			tCh, ok := changes[target]
+
+			// Just continue until we see our event.
+			if !ok {
+				continue
+			}
+
+			log.Info("==> New ActiveState:", tCh.ActiveState)
+
+			if tCh.ActiveState == "active" && tCh.Name == target {
+				log.Error("Reached timeout")
+			}
+		case err = <-errChan:
+			log.Error("change err: ", err)
+		case <-time.After(10 * time.Second):
+			log.Error("Reached timeout")
+		}
+	}
+
 }

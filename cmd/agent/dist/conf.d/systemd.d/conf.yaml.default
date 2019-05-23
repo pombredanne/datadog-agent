@@ -1,2 +1,9 @@
+init_config:
+
 instances:
-  - {}
+  - unit_names:
+     - ssh.service
+     - docker.service
+    unit_regex:
+     - lvm2-.*
+     - cloud-.*
