@@ -8,69 +8,14 @@ package systemd
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/DataDog/datadog-agent/pkg/aggregator/mocksender"
 	"github.com/coreos/go-systemd/dbus"
-	"github.com/shirou/gopsutil/cpu"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
-
-var (
-	firstSample = []cpu.TimesStat{
-		{
-			CPU:       "cpu-total",
-			User:      1229386,
-			Nice:      623,
-			System:    263584,
-			Idle:      25496761,
-			Iowait:    12113,
-			Irq:       10,
-			Softirq:   1151,
-			Steal:     0,
-			Guest:     0,
-			GuestNice: 0,
-			Stolen:    0,
-		},
-	}
-	secondSample = []cpu.TimesStat{
-		{
-			CPU:       "cpu-total",
-			User:      1229586,
-			Nice:      625,
-			System:    268584,
-			Idle:      25596761,
-			Iowait:    12153,
-			Irq:       15,
-			Softirq:   1451,
-			Steal:     2,
-			Guest:     0,
-			GuestNice: 0,
-			Stolen:    0,
-		},
-	}
-)
-
-var sample = firstSample
-
-func CPUTimes(bool) ([]cpu.TimesStat, error) {
-	return sample, nil
-}
-
-// // Conn is a connection to systemd's dbus endpoint.
-// type Conn struct {
-// }
-
-// func (c *Conn) ListUnits() ([]coredbus.UnitStatus, error) {
-// 	return nil, nil
-// }
-
-// Conn is a connection to systemd's dbus endpoint.
-// type Conn struct {
-// }
-
-// type MyMockedObject struct {
-// 	Conn
-// }
 
 type Conn struct {
 }
@@ -89,29 +34,67 @@ func connListUnitsFake(c *dbus.Conn) ([]dbus.UnitStatus, error) {
 	}, nil
 }
 
+func connGetUnitPropertiesFake(c *dbus.Conn, unitName string) (map[string]interface{}, error) {
+	props := map[string]interface{}{
+		"CPUShares": uint64(10),
+	}
+	return props, nil
+}
+
 func connCloseFake(c *dbus.Conn) {
 }
 
-func TestSystemdCheckLinux(t *testing.T) {
+func TestDefaultConfiguration(t *testing.T) {
+	check := Check{}
+	check.Configure([]byte(``), []byte(``))
+
+	assert.Equal(t, []string(nil), check.config.instance.UnitNames)
+	assert.Equal(t, []string(nil), check.config.instance.UnitRegexStrings)
+	assert.Equal(t, []*regexp.Regexp(nil), check.config.instance.UnitRegexPatterns)
+}
+
+func TestConfiguration(t *testing.T) {
+	check := Check{}
+	rawInstanceConfig := []byte(`
+unit_names:
+ - ssh.service
+ - syslog.socket
+unit_regex:
+ - lvm2-.*
+ - cloud-.*
+`)
+	err := check.Configure(rawInstanceConfig, []byte(``))
+
+	assert.Nil(t, err)
+	// assert.Equal(t, true, check.config.instance.UnitNames)
+	assert.ElementsMatch(t, []string{"ssh.service", "syslog.socket"}, check.config.instance.UnitNames)
+	regexes := []*regexp.Regexp{
+		regexp.MustCompile("lvm2-.*"),
+		regexp.MustCompile("cloud-.*"),
+	}
+	assert.Equal(t, regexes, check.config.instance.UnitRegexPatterns)
+}
+func TestSystemdCheck(t *testing.T) {
 	dbusNew = dbusNewFake
 	connListUnits = connListUnitsFake
 	connClose = connCloseFake
+	connGetUnitProperties = connGetUnitPropertiesFake
 
 	// create an instance of our test object
-	systemdCheck := new(SystemdCheck)
-	systemdCheck.Configure(nil, nil)
+	check := new(Check)
+	check.Configure(nil, nil)
 
 	// setup expectations
-	mock := mocksender.NewMockSender(systemdCheck.ID())
+	mockSender := mocksender.NewMockSender(check.ID())
+	mockSender.On("Gauge", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mockSender.On("Commit").Return()
 
-	mock.On("Gauge", "systemd.unit.cpu", 1.0, "", []string(nil)).Return().Times(1)
-	mock.On("Gauge", "systemd.unit.active.count", 2.0, "", []string(nil)).Return().Times(1)
-	mock.On("Commit").Return().Times(1)
+	check.Run()
 
-	systemdCheck.Run()
-
-	mock.AssertExpectations(t)
-	mock.AssertNumberOfCalls(t, "Gauge", 2)
-	mock.AssertNumberOfCalls(t, "Commit", 1)
-
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.active.count", float64(2), "", []string(nil))
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit1"})
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit2"})
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit3"})
+	mockSender.AssertNumberOfCalls(t, "Gauge", 4)
+	mockSender.AssertNumberOfCalls(t, "Commit", 1)
 }

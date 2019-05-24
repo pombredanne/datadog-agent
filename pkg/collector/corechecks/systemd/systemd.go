@@ -21,22 +21,25 @@ import (
 	core "github.com/DataDog/datadog-agent/pkg/collector/corechecks"
 )
 
-const systemdCheckName = "systemd"
-
 const (
-	unitActiveState = "active"
+	systemdCheckName = "systemd"
+	unitTag          = "unit"
+	unitActiveState  = "active"
 )
 
 // For testing purpose
 var (
-	dbusNew       = dbus.New
-	connListUnits = func(c *dbus.Conn) ([]dbus.UnitStatus, error) { return c.ListUnits() }
-	connClose     = func(c *dbus.Conn) { c.Close() }
-	timeNow       = time.Now
+	dbusNew               = dbus.New
+	connListUnits         = func(c *dbus.Conn) ([]dbus.UnitStatus, error) { return c.ListUnits() }
+	connGetUnitProperties = func(c *dbus.Conn, unitName string) (map[string]interface{}, error) {
+		return c.GetUnitProperties(unitName)
+	}
+	connClose = func(c *dbus.Conn) { c.Close() }
+	timeNow   = time.Now
 )
 
-// SystemdCheck doesn't need additional fields
-type SystemdCheck struct {
+// Check doesn't need additional fields
+type Check struct {
 	core.CheckBase
 	config systemdConfig
 }
@@ -55,7 +58,7 @@ type systemdConfig struct {
 }
 
 // Run executes the check
-func (c *SystemdCheck) Run() error {
+func (c *Check) Run() error {
 
 	log.Warnf("[DEV] c.config.instance.UnitNames Run: %v", c.config.instance.UnitNames)
 	log.Warnf("[DEV] c.config.instance.UnitRegexStrings Run: %v", c.config.instance.UnitRegexStrings)
@@ -76,7 +79,7 @@ func (c *SystemdCheck) Run() error {
 	submitOverallMetrics(sender, conn)
 
 	for _, unitName := range c.config.instance.UnitNames {
-		tags := []string{"unit:" + unitName}
+		tags := []string{unitTag + ":" + unitName}
 		c.submitUnitMetrics(sender, conn, unitName, tags)
 		if strings.HasSuffix(unitName, ".service") {
 			c.submitServiceMetrics(sender, conn, unitName, tags)
@@ -88,10 +91,10 @@ func (c *SystemdCheck) Run() error {
 	return nil
 }
 
-func (c *SystemdCheck) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
+func (c *Check) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
 	log.Infof("[DEV] Check Unit %s", unitName)
 
-	properties, err := conn.GetUnitProperties(unitName)
+	properties, err := connGetUnitProperties(conn, unitName)
 	if err != nil {
 		log.Errorf("Error getting unit properties: %s", unitName)
 	}
@@ -156,7 +159,7 @@ func getStringProperty(properties map[string]interface{}, propertyName string) (
 	return value, nil
 }
 
-func (c *SystemdCheck) submitServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
+func (c *Check) submitServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
 	properties, err := conn.GetUnitTypeProperties(unitName, "Service") // TODO: change me
 	if err != nil {
 		log.Errorf("Error getting properties for service: %s", unitName)
@@ -180,13 +183,31 @@ func submitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
 		if unit.ActiveState == unitActiveState {
 			activeUnitCounter++
 		}
+
+		tags := []string{unitTag + ":" + unit.Name}
+
+		properties, err := connGetUnitProperties(conn, unit.Name)
+		if err != nil {
+			log.Errorf("Error getting unit properties: %s", unit.Name)
+		}
+
+		log.Infof("Unit Properties len: %v", len(properties))
+		log.Infof("Unit Properties len: %v", properties)
+
+		activeState, err := getStringProperty(properties, "ActiveState")
+		if err != nil {
+			log.Errorf("Error getting property: %s", err)
+		} else {
+			tags = append(tags, "active_state:"+activeState)
+		}
+		sender.Gauge("systemd.unit.count", 1, "", tags)
 	}
 
 	sender.Gauge("systemd.unit.active.count", float64(activeUnitCounter), "", nil)
 }
 
 // Configure configures the network checks
-func (c *SystemdCheck) Configure(rawInstance integration.Data, rawInitConfig integration.Data) error {
+func (c *Check) Configure(rawInstance integration.Data, rawInitConfig integration.Data) error {
 	err := c.CommonConfigure(rawInstance)
 	if err != nil {
 		return err
@@ -216,7 +237,7 @@ func (c *SystemdCheck) Configure(rawInstance integration.Data, rawInitConfig int
 }
 
 func systemdFactory() check.Check {
-	return &SystemdCheck{
+	return &Check{
 		CheckBase: core.NewCheckBase(systemdCheckName),
 	}
 }
