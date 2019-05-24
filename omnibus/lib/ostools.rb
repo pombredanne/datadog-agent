@@ -1,3 +1,5 @@
+require ‘FileUtils’#
+
 # ------------------------------------
 # OS-detection helper functions
 # ------------------------------------
@@ -45,4 +47,20 @@ end
 def with_python_runtime?(runtime)
     python_runtimes = ENV['PYTHON_RUNTIMES'].nil? ? ['2'] : ENV['PYTHON_RUNTIMES'].split(',')
     return python_runtimes.include? runtime
+end
+
+alias read_elf_files read_shared_libs
+
+def strip_symbols(path, symboldir)
+    read_elf_files("find #{path}/ -type f -exec file {} \; | grep 'ELF' | cut -f1 -d:") do |elf|
+	    debugfile = "#{elf}.debug"
+        elfdir = File.dirname(debugfile)
+        FileUtils.mkdir_p "#{symboldir}/#{elfdir}" unless Dir.exist? "#{symboldir}/#{elfdir}"
+
+	    puts "stripping ${elf}, putting debug info into ${debugfile}"
+	    shellout("objcopy --only-keep-debug #{elf} #{symboldir}/#{debugfile}")
+	    shellout("strip --strip-debug --strip-unneeded #{elf}")
+	    shellout("objcopy --add-gnu-debuglink=#{symboldir}/#{debugfile} #{elf}")
+        shellout("chmod -x #{symboldir}/#{debugfile}")
+    end
 end
